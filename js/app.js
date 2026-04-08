@@ -198,7 +198,7 @@ function attachCardEvents(card) {
   });
 
   // ── pointerup: TOUCH tap triggers sound directly here ────────────
-  // This is the key fix. Touch doesn't wait for the synthetic click event.
+  // Touch doesn't wait for the synthetic click event.
   card.addEventListener("pointerup", async (e) => {
     if (state.pointerId !== e.pointerId) return;
 
@@ -229,9 +229,9 @@ function attachCardEvents(card) {
   card.addEventListener("pointercancel", () => {
     clearHoldTimer();
     card.classList.remove("is-holding");
-    state.activeCard  = null;
-    state.pointerId   = null;
-    state.movedTooFar = false;
+    state.activeCard   = null;
+    state.pointerId    = null;
+    state.movedTooFar  = false;
     state.touchHandled = false;
   });
 
@@ -285,7 +285,7 @@ function attachCloseButton(card) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Keyboard events (unchanged — already works correctly)
+// Keyboard events
 // ─────────────────────────────────────────────────────────────────────
 function attachKeyboardEvents(card) {
   card.addEventListener("keydown", (e) => {
@@ -367,6 +367,58 @@ function findInsect(slug) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Audio unlock — MUST happen on first direct user gesture
+// ─────────────────────────────────────────────────────────────────────
+//
+// Mobile browsers (Chrome Android, Safari iOS) block audio.play() unless
+// it is called synchronously inside a user-gesture handler. The hold-
+// narration fires from a setTimeout — no gesture context → NotAllowedError
+// → silent failure.
+//
+// Fix: on the very first pointerdown anywhere on the page, create an
+// AudioContext and resume() it inside that gesture. This permanently
+// unlocks the audio system for the whole session. After that, audio.play()
+// works from anywhere — timers, async callbacks, etc.
+// ─────────────────────────────────────────────────────────────────────
+let audioUnlocked = false;
+let audioCtx      = null;
+
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+
+  // 1. Unlock the Web Audio API context
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+    // Play a 1-frame silent buffer — standard iOS Safari unlock trick
+    const buf    = audioCtx.createBuffer(1, 1, 22050);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buf;
+    source.connect(audioCtx.destination);
+    source.start(0);
+  } catch (_) {}
+
+  // 2. Prime the <audio> element pipeline (Chrome Android)
+  try {
+    const primer   = new Audio();
+    primer.src     = "audio/sound/ant.mp3";
+    primer.volume  = 0;
+    primer.muted   = true;
+    primer.preload = "auto";
+    const p = primer.play();
+    if (p && typeof p.then === "function") {
+      p.then(() => { primer.pause(); primer.src = ""; }).catch(() => {});
+    }
+  } catch (_) {}
+}
+
+// Hook onto the first pointerdown anywhere on the page
+document.addEventListener("pointerdown", unlockAudio, { once: true, passive: true });
+
+// ─────────────────────────────────────────────────────────────────────
 // Audio playback
 // ─────────────────────────────────────────────────────────────────────
 async function playSound(insect, card) {
@@ -403,62 +455,51 @@ async function playNarration(insect, card) {
 
 function playAudioFile(source) {
   return new Promise((resolve, reject) => {
-    const audio = new Audio();
+    const audio       = new Audio();
     state.activeAudio = audio;
-    let settled = false;
+    let settled       = false;
+    let watchdog      = null;
 
-    const cleanup = () => {
-      audio.onended          = null;
-      audio.onerror          = null;
-      audio.onloadeddata     = null;
-      audio.oncanplaythrough = null;
+    const settle = (fn) => {
+      if (settled) return;
+      settled           = true;
+      clearTimeout(watchdog);
+      audio.onended   = null;
+      audio.onerror   = null;
+      audio.oncanplay = null;
+      state.activeAudio = null;
+      fn();
     };
 
-    audio.preload = "none";
+    // preload="metadata" — safe on mobile:
+    //   • loads only headers/duration, not the full file   → no memory bomb
+    //   • oncanplay fires reliably (unlike preload="none") → no silent hang
+    //   • browser can start streaming on play()            → no buffering wait
+    audio.preload = "metadata";
     audio.src     = source;
 
-    audio.oncanplaythrough = () => {
-      if (settled) return;
-      audio.oncanplaythrough = null;
+    // oncanplay fires as soon as enough data is available to start playback.
+    // More reliable than onloadeddata across Android WebViews and iOS Safari.
+    audio.oncanplay = () => {
+      audio.play().then(
+        () => {},   // playing — wait for onended
+        (err) => settle(() => reject(err))
+      );
     };
 
-    audio.onloadeddata = async () => {
-      if (settled) return;
-      try {
-        await audio.play();
-      } catch (err) {
-        settled = true;
-        cleanup();
-        state.activeAudio = null;
-        reject(err);
-      }
-    };
+    audio.onended = () => settle(() => resolve());
 
-    audio.load(); // required with preload="none"
+    audio.onerror = () =>
+      settle(() => reject(new Error(`Cannot load audio: ${source}`)));
 
-    audio.onended = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      state.activeAudio = null;
-      resolve();
-    };
+    // Safety net — if oncanplay never fires, unblock the UI after 8 s
+    watchdog = setTimeout(
+      () => settle(() => reject(new Error(`Audio load timeout: ${source}`))),
+      8000
+    );
 
-    audio.onerror = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      state.activeAudio = null;
-      reject(new Error(`Missing audio file: ${source}`));
-    };
-
-    audio._rejectPlayback = (message) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      state.activeAudio = null;
-      reject(new Error(message));
-    };
+    audio._rejectPlayback = (message) =>
+      settle(() => reject(new Error(message)));
   });
 }
 
