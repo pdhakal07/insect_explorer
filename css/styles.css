@@ -81,6 +81,7 @@ body::after {
   background: rgba(7, 21, 32, 0.62);
   border: 1px solid var(--line);
   backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
   box-shadow: var(--shadow);
 }
 
@@ -313,6 +314,7 @@ body::after {
   transform: scale(0.9);
   transition: opacity 160ms ease, transform 160ms ease, background 160ms ease, border-color 160ms ease;
   backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .insect-card.is-narrating .card-close {
@@ -395,5 +397,186 @@ body::after {
 
   .quiz-panel {
     padding: 28px 22px;
+  }
+}
+/* ════════════════════════════════════════════════════════
+   FIX 1 — Insect name label on gallery cards
+   ════════════════════════════════════════════════════════ */
+.card-name {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  padding: 28px 14px 13px;
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+  /* Gradient fade from transparent to card background */
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(9, 21, 32, 0.72) 40%,
+    rgba(9, 21, 32, 0.96) 100%
+  );
+  pointer-events: none;
+  /* Slide up gently on hover */
+  transition: opacity 200ms ease;
+}
+
+/* Slightly brighter name on hover / active */
+.insect-card:hover .card-name,
+.insect-card.is-active .card-name {
+  color: var(--accent);
+}
+
+/* ════════════════════════════════════════════════════════
+   FIX 2 — Onboarding hint banner
+   ════════════════════════════════════════════════════════ */
+.hint-banner {
+  margin-top: 14px;
+  border-radius: 999px;
+  background: rgba(140, 241, 201, 0.07);
+  border: 1px solid rgba(140, 241, 201, 0.18);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  overflow: hidden;
+  animation: hintSlideIn 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.hint-hiding {
+  animation: hintSlideOut 0.32s ease forwards !important;
+}
+
+@keyframes hintSlideIn {
+  from { opacity: 0; transform: translateY(-10px); max-height: 0; }
+  to   { opacity: 1; transform: translateY(0);     max-height: 80px; }
+}
+
+@keyframes hintSlideOut {
+  from { opacity: 1; max-height: 80px; }
+  to   { opacity: 0; max-height: 0;    }
+}
+
+.hint-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 10px 18px;
+}
+
+.hint-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.hint-text {
+  flex: 1;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.hint-text strong {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.hint-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid rgba(143, 194, 226, 0.2);
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+  font-family: inherit;
+}
+
+.hint-close:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+}
+
+/* ════════════════════════════════════════════════════════
+   FIX 3 — Improved hold-meter (taller + more visible)
+   ════════════════════════════════════════════════════════ */
+
+/* Override existing hold-meter */
+.hold-meter {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 46px; /* sit above the name label */
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+/* Only visible while holding */
+.insect-card.is-holding .hold-meter {
+  opacity: 1;
+}
+
+.hold-meter-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  transform: scaleX(0);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 999px;
+}
+
+.insect-card.is-holding .hold-meter-fill {
+  transform: scaleX(1);
+  transition: transform 2s linear;
+}
+
+/* Remove old ::after approach (now using .hold-meter-fill div) */
+.hold-meter::after {
+  display: none;
+}
+
+/* ════════════════════════════════════════════════════════
+   Responsive adjustments for new elements
+   ════════════════════════════════════════════════════════ */
+@media (max-width: 760px) {
+  .card-name {
+    font-size: 0.72rem;
+    padding: 22px 10px 10px;
+  }
+
+  .hold-meter {
+    left: 10px;
+    right: 10px;
+    bottom: 40px;
+    height: 4px;
+  }
+
+  .hint-text {
+    font-size: 0.76rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .hint-banner {
+    border-radius: 16px;
+  }
+
+  .hint-inner {
+    padding: 10px 12px;
+    gap: 8px;
   }
 }

@@ -1,40 +1,49 @@
+
 const insects = [
-  { slug: "butterfly", name: "Butterfly" },
-  { slug: "ant", name: "Ant" },
-  { slug: "grasshopper", name: "Grasshopper" },
-  { slug: "beetle", name: "Beetle" },
-  { slug: "fly", name: "Fly" },
-  { slug: "mosquito", name: "Mosquito" },
-  { slug: "termite", name: "Termite" },
-  { slug: "bee", name: "Bee" },
-  { slug: "wasp", name: "Wasp" },
-  { slug: "dragonfly", name: "Dragonfly" },
+  { slug: "butterfly",    name: "Butterfly"    },
+  { slug: "ant",          name: "Ant"          },
+  { slug: "grasshopper",  name: "Grasshopper"  },
+  { slug: "beetle",       name: "Beetle"       },
+  { slug: "fly",          name: "Fly"          },
+  { slug: "mosquito",     name: "Mosquito"     },
+  { slug: "termite",      name: "Termite"      },
+  { slug: "bee",          name: "Bee"          },
+  { slug: "wasp",         name: "Wasp"         },
+  { slug: "dragonfly",    name: "Dragonfly"    },
   { slug: "stick_insect", name: "Stick Insect" },
-  { slug: "cockroach", name: "Cockroach" }
+  { slug: "cockroach",    name: "Cockroach"    }
 ];
 
 const state = {
-  busy: false,
-  holdTimer: null,
-  holdTriggered: false,
-  activeCard: null,
-  activeAudio: null,
-  activeMode: null,
-  pointerId: null,
-  startX: 0,
-  startY: 0,
-  movedTooFar: false,
-  suppressNextClick: false
+  busy:              false,
+  holdTimer:         null,
+  holdTriggered:     false,
+  activeCard:        null,
+  activeAudio:       null,
+  activeMode:        null,
+  pointerId:         null,
+  pointerType:       null,   // "mouse" | "touch" | "pen" — set on pointerdown
+  startX:            0,
+  startY:            0,
+  movedTooFar:       false,
+  touchHandled:      false,  // true after touch pointerup fires playSound/narration
+                             // → suppresses the subsequent synthetic click
+  hintDismissed:     false
 };
 
-const HOLD_MS = 2000;
-const MOVE_TOLERANCE = 18;
+const HOLD_MS              = 2000;
+const MOVE_TOLERANCE_MOUSE = 10;   // px — mouse is precise
+const MOVE_TOLERANCE_TOUCH = 30;   // px — fingers tremble, especially on tablets
 
-const grid = document.getElementById("insect-grid");
+const grid       = document.getElementById("insect-grid");
 const liveRegion = document.getElementById("sr-status");
 
+// ─────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   renderCards();
+  renderHintBanner();
   announce("Gallery ready.");
 
   window.addEventListener("pagehide", stopAllPlayback);
@@ -43,28 +52,74 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────
+// Hint banner (onboarding)
+// ─────────────────────────────────────────────────────────────────────
+function renderHintBanner() {
+  const shell = document.querySelector(".app-shell");
+  if (!shell) return;
+
+  const banner = document.createElement("div");
+  banner.className = "hint-banner";
+  banner.setAttribute("role", "note");
+  banner.innerHTML = `
+    <div class="hint-inner">
+      <span class="hint-icon">💡</span>
+      <span class="hint-text">
+        <strong>Tap</strong> any insect to hear its sound &nbsp;·&nbsp;
+        <strong>Hold</strong> for a full narration
+      </span>
+      <button class="hint-close" aria-label="Dismiss tip">×</button>
+    </div>
+  `;
+
+  shell.querySelector(".topbar").insertAdjacentElement("afterend", banner);
+
+  banner.querySelector(".hint-close").addEventListener("click", () => {
+    dismissHint(banner);
+  });
+
+  grid.addEventListener("pointerup", () => {
+    if (!state.hintDismissed) dismissHint(banner);
+  }, { once: true });
+}
+
+function dismissHint(banner) {
+  if (state.hintDismissed) return;
+  state.hintDismissed = true;
+  banner.classList.add("hint-hiding");
+  setTimeout(() => banner.remove(), 320);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Card rendering
+// ─────────────────────────────────────────────────────────────────────
 function renderCards() {
   if (!grid) return;
 
-  grid.innerHTML = insects
-    .map(
-      (insect) => `
-      <article
-        class="insect-card"
-        tabindex="0"
-        role="button"
-        aria-label="${insect.name}. Tap for insect sound. Press and hold for narration."
-        data-slug="${insect.slug}"
-      >
-        <button class="card-close" type="button" aria-label="Stop narration">×</button>
-        <div class="card-media">
-          <img src="images/insects/${insect.slug}.png" alt="${insect.name}" loading="lazy" draggable="false" />
-        </div>
-        <div class="hold-meter" aria-hidden="true"></div>
-      </article>
-    `
-    )
-    .join("");
+  grid.innerHTML = insects.map((insect) => `
+    <article
+      class="insect-card"
+      tabindex="0"
+      role="button"
+      aria-label="${insect.name}. Tap for insect sound. Press and hold for narration."
+      data-slug="${insect.slug}"
+    >
+      <button class="card-close" type="button" aria-label="Stop narration">×</button>
+      <div class="card-media">
+        <img
+          src="images/insects/${insect.slug}.png"
+          alt="${insect.name}"
+          loading="lazy"
+          draggable="false"
+        />
+      </div>
+      <div class="card-name" aria-hidden="true">${insect.name}</div>
+      <div class="hold-meter" aria-hidden="true">
+        <div class="hold-meter-fill"></div>
+      </div>
+    </article>
+  `).join("");
 
   grid.querySelectorAll(".insect-card").forEach((card) => {
     attachCardEvents(card);
@@ -73,138 +128,49 @@ function renderCards() {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Pointer event handlers
+// ─────────────────────────────────────────────────────────────────────
 function attachCardEvents(card) {
-  card.addEventListener("pointerdown", (event) => {
-    if (event.target.closest(".card-close")) return;
-    onPressStart(event, card);
-  });
 
-  card.addEventListener("pointermove", (event) => {
-    if (state.activeCard !== card) return;
-    if (state.pointerId !== event.pointerId) return;
+  // ── pointerdown: start of every interaction ──────────────────────
+  card.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".card-close")) return;
 
-    const dx = event.clientX - state.startX;
-    const dy = event.clientY - state.startY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
+    // Right-click / middle-click on mouse — ignore
+    if (e.pointerType === "mouse" && e.button !== 0) return;
 
-    if (distance > MOVE_TOLERANCE) {
-      state.movedTooFar = true;
-      clearHoldTimer();
-      card.classList.remove("is-holding");
-    }
-  });
-
-  card.addEventListener("pointerup", (event) => {
-    if (state.pointerId !== event.pointerId) return;
-    endPress(card);
-  });
-
-  card.addEventListener("pointercancel", () => {
-    endPress(card);
-  });
-
-  card.addEventListener("pointerleave", (event) => {
-    if (event.pointerType === "mouse") {
-      endPress(card);
-    }
-  });
-
-  card.addEventListener("click", async (event) => {
-    if (event.target.closest(".card-close")) return;
-
-    if (state.suppressNextClick) {
-      event.preventDefault();
-      event.stopPropagation();
-      state.suppressNextClick = false;
-      return;
-    }
-
-    if (state.busy) {
-      flashBusy(card);
-      announce("Audio in progress.");
-      return;
-    }
-
-    const insect = findInsect(card.dataset.slug);
-    await playSound(insect, card);
-  });
-
-  card.addEventListener("contextmenu", (event) => event.preventDefault());
-}
-
-function onPressStart(event, card) {
-  if (state.busy) {
-    flashBusy(card);
-    announce("Audio in progress.");
-    return;
-  }
-
-  if (event.pointerType === "mouse" && event.button !== 0) return;
-
-  clearHoldTimer();
-
-  state.holdTriggered = false;
-  state.activeCard = card;
-  state.pointerId = event.pointerId;
-  state.startX = event.clientX;
-  state.startY = event.clientY;
-  state.movedTooFar = false;
-
-  card.classList.add("is-holding");
-
-  try {
-    card.setPointerCapture(event.pointerId);
-  } catch (_) {}
-
-  if (event.pointerType !== "mouse") {
-    event.preventDefault();
-  }
-
-  state.holdTimer = setTimeout(async () => {
-    if (state.busy) return;
-    if (state.activeCard !== card) return;
-    if (state.movedTooFar) return;
-
-    state.holdTriggered = true;
-    state.suppressNextClick = true;
-    card.classList.remove("is-holding");
-
-    const insect = findInsect(card.dataset.slug);
-    await playNarration(insect, card);
-  }, HOLD_MS);
-}
-
-function endPress(card) {
-  clearHoldTimer();
-
-  if (card) {
-    card.classList.remove("is-holding");
-  }
-
-  state.activeCard = null;
-  state.pointerId = null;
-  state.movedTooFar = false;
-}
-
-function attachKeyboardEvents(card) {
-  card.addEventListener("keydown", (event) => {
-    if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
-    event.preventDefault();
-
-    if (state.busy) {
-      flashBusy(card);
-      announce("Audio in progress.");
-      return;
-    }
+    if (state.busy) { flashBusy(card); announce("Audio in progress."); return; }
 
     clearHoldTimer();
+
     state.holdTriggered = false;
-    state.activeCard = card;
+    state.touchHandled  = false;
+    state.activeCard    = card;
+    state.pointerId     = e.pointerId;
+    state.pointerType   = e.pointerType;   // remember "mouse" vs "touch"/"pen"
+    state.startX        = e.clientX;
+    state.startY        = e.clientY;
+    state.movedTooFar   = false;
+
     card.classList.add("is-holding");
 
+    try { card.setPointerCapture(e.pointerId); } catch (_) {}
+
+    // Prevent scroll/context-menu on touch ONLY.
+    // Do NOT call preventDefault() for mouse — it would break the click event.
+    if (e.pointerType !== "mouse") {
+      e.preventDefault();
+    }
+
+    // Start the hold timer for both touch and mouse
     state.holdTimer = setTimeout(async () => {
+      if (state.busy)                    return;
+      if (state.activeCard !== card)     return;
+      if (state.movedTooFar)             return;
+
       state.holdTriggered = true;
-      state.suppressNextClick = true;
+      state.touchHandled  = true;   // suppress upcoming synthetic click / pointerup sound
       card.classList.remove("is-holding");
 
       const insect = findInsect(card.dataset.slug);
@@ -212,24 +178,145 @@ function attachKeyboardEvents(card) {
     }, HOLD_MS);
   });
 
-  card.addEventListener("keyup", async (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
+  // ── pointermove: cancel hold if user is scrolling ────────────────
+  card.addEventListener("pointermove", (e) => {
+    if (state.activeCard !== card) return;
+    if (state.pointerId !== e.pointerId) return;
+
+    const tolerance = (state.pointerType === "mouse")
+      ? MOVE_TOLERANCE_MOUSE
+      : MOVE_TOLERANCE_TOUCH;
+
+    const dx = e.clientX - state.startX;
+    const dy = e.clientY - state.startY;
+
+    if (Math.sqrt(dx * dx + dy * dy) > tolerance) {
+      state.movedTooFar = true;
+      clearHoldTimer();
+      card.classList.remove("is-holding");
+    }
+  });
+
+  // ── pointerup: TOUCH tap triggers sound directly here ────────────
+  // This is the key fix. Touch doesn't wait for the synthetic click event.
+  card.addEventListener("pointerup", async (e) => {
+    if (state.pointerId !== e.pointerId) return;
+
+    const wasTouch = state.pointerType !== "mouse";  // touch or pen
+
+    // Clear the hold timer (if we lifted before 2 s)
+    clearHoldTimer();
+    card.classList.remove("is-holding");
+
+    if (wasTouch) {
+      // TOUCH PATH: act directly here, suppress synthetic click below
+      if (!state.holdTriggered && !state.movedTooFar && !state.busy) {
+        state.touchHandled = true;
+        const insect = findInsect(card.dataset.slug);
+        await playSound(insect, card);
+      }
+      // Whether we played or not, mark as handled so click is suppressed
+      state.touchHandled = true;
+    }
+
+    // MOUSE PATH: do nothing here — let the synthetic click fire normally
+    state.activeCard  = null;
+    state.pointerId   = null;
+    state.movedTooFar = false;
+  });
+
+  // ── pointercancel: system interrupted (e.g. notification, scroll takeover) ──
+  card.addEventListener("pointercancel", () => {
+    clearHoldTimer();
+    card.classList.remove("is-holding");
+    state.activeCard  = null;
+    state.pointerId   = null;
+    state.movedTooFar = false;
+    state.touchHandled = false;
+  });
+
+  // ── pointerleave: mouse only — finger leaving card boundary is fine ──
+  card.addEventListener("pointerleave", (e) => {
+    if (e.pointerType === "mouse") {
+      clearHoldTimer();
+      card.classList.remove("is-holding");
+      state.activeCard  = null;
+      state.pointerId   = null;
+      state.movedTooFar = false;
+    }
+  });
+
+  // ── click: MOUSE only — suppressed entirely for touch via touchHandled ──
+  card.addEventListener("click", async (e) => {
+    if (e.target.closest(".card-close")) return;
+
+    // Suppress synthetic click that follows a touch pointerup
+    if (state.touchHandled) {
+      state.touchHandled = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (state.busy) { flashBusy(card); announce("Audio in progress."); return; }
+
+    const insect = findInsect(card.dataset.slug);
+    await playSound(insect, card);
+  });
+
+  // Prevent long-press context menu on touch
+  card.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Close button (stop narration)
+// ─────────────────────────────────────────────────────────────────────
+function attachCloseButton(card) {
+  const closeBtn = card.querySelector(".card-close");
+  if (!closeBtn) return;
+
+  closeBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+  closeBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (card.classList.contains("is-narrating")) stopNarration(card);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Keyboard events (unchanged — already works correctly)
+// ─────────────────────────────────────────────────────────────────────
+function attachKeyboardEvents(card) {
+  card.addEventListener("keydown", (e) => {
+    if (e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+
+    if (state.busy) { flashBusy(card); announce("Audio in progress."); return; }
+
+    clearHoldTimer();
+    state.holdTriggered = false;
+    state.activeCard    = card;
+    card.classList.add("is-holding");
+
+    state.holdTimer = setTimeout(async () => {
+      state.holdTriggered = true;
+      card.classList.remove("is-holding");
+      const insect = findInsect(card.dataset.slug);
+      await playNarration(insect, card);
+    }, HOLD_MS);
+  });
+
+  card.addEventListener("keyup", async (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
 
     clearHoldTimer();
     card.classList.remove("is-holding");
     state.activeCard = null;
 
-    if (state.holdTriggered) {
-      state.holdTriggered = false;
-      return;
-    }
-
-    if (state.busy) {
-      flashBusy(card);
-      announce("Audio in progress.");
-      return;
-    }
+    if (state.holdTriggered) { state.holdTriggered = false; return; }
+    if (state.busy)          { flashBusy(card); announce("Audio in progress."); return; }
 
     const insect = findInsect(card.dataset.slug);
     await playSound(insect, card);
@@ -238,30 +325,13 @@ function attachKeyboardEvents(card) {
   card.addEventListener("blur", () => {
     clearHoldTimer();
     card.classList.remove("is-holding");
-    if (state.activeCard === card) {
-      state.activeCard = null;
-    }
+    if (state.activeCard === card) state.activeCard = null;
   });
 }
 
-function attachCloseButton(card) {
-  const closeBtn = card.querySelector(".card-close");
-  if (!closeBtn) return;
-
-  closeBtn.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-  });
-
-  closeBtn.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (card.classList.contains("is-narrating")) {
-      stopNarration(card);
-    }
-  });
-}
-
+// ─────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────
 function clearHoldTimer() {
   if (state.holdTimer) {
     clearTimeout(state.holdTimer);
@@ -270,12 +340,11 @@ function clearHoldTimer() {
 }
 
 function setBusy(isBusy, card = null, mode = null) {
-  state.busy = isBusy;
+  state.busy       = isBusy;
   state.activeMode = mode;
-
   document.querySelectorAll(".insect-card").forEach((item) => {
-    item.classList.toggle("is-busy", isBusy && item !== card);
-    item.classList.toggle("is-active", isBusy && item === card);
+    item.classList.toggle("is-busy",      isBusy && item !== card);
+    item.classList.toggle("is-active",    isBusy && item === card);
     item.classList.toggle("is-narrating", isBusy && item === card && mode === "narration");
   });
 }
@@ -286,14 +355,9 @@ function announce(message) {
 
 function flashBusy(card) {
   if (!card || !card.animate) return;
-
   card.animate(
-    [
-      { transform: "translateX(0)" },
-      { transform: "translateX(-5px)" },
-      { transform: "translateX(5px)" },
-      { transform: "translateX(0)" }
-    ],
+    [{ transform: "translateX(0)" }, { transform: "translateX(-5px)" },
+     { transform: "translateX(5px)" }, { transform: "translateX(0)" }],
     { duration: 260, iterations: 1 }
   );
 }
@@ -302,17 +366,18 @@ function findInsect(slug) {
   return insects.find((item) => item.slug === slug);
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Audio playback
+// ─────────────────────────────────────────────────────────────────────
 async function playSound(insect, card) {
   if (!insect || state.busy) return;
-
   setBusy(true, card, "sound");
   announce(`${insect.name} sound playing.`);
-
   try {
     await playAudioFile(`audio/sound/${insect.slug}.mp3`);
     announce(`${insect.name} sound finished.`);
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error(err);
     announce(`${insect.name} sound could not play.`);
   } finally {
     finishPlayback();
@@ -321,16 +386,14 @@ async function playSound(insect, card) {
 
 async function playNarration(insect, card) {
   if (!insect || state.busy) return;
-
   setBusy(true, card, "narration");
   announce(`${insect.name} narration playing.`);
-
   try {
     await playAudioFile(`audio/narrative/${insect.slug}.mp3`);
     announce(`${insect.name} narration finished.`);
-  } catch (error) {
-    if (!error || error.message !== "Narration stopped by user.") {
-      console.error(error);
+  } catch (err) {
+    if (!err || err.message !== "Narration stopped by user.") {
+      console.error(err);
       announce(`${insect.name} narration could not play.`);
     }
   } finally {
@@ -345,26 +408,33 @@ function playAudioFile(source) {
     let settled = false;
 
     const cleanup = () => {
-      audio.onended = null;
-      audio.onerror = null;
-      audio.onloadeddata = null;
+      audio.onended          = null;
+      audio.onerror          = null;
+      audio.onloadeddata     = null;
+      audio.oncanplaythrough = null;
     };
 
-    audio.preload = "auto";
-    audio.src = source;
+    audio.preload = "none";
+    audio.src     = source;
+
+    audio.oncanplaythrough = () => {
+      if (settled) return;
+      audio.oncanplaythrough = null;
+    };
 
     audio.onloadeddata = async () => {
       if (settled) return;
-
       try {
         await audio.play();
-      } catch (error) {
+      } catch (err) {
         settled = true;
         cleanup();
         state.activeAudio = null;
-        reject(error);
+        reject(err);
       }
     };
+
+    audio.load(); // required with preload="none"
 
     audio.onended = () => {
       if (settled) return;
@@ -393,23 +463,15 @@ function playAudioFile(source) {
 }
 
 function stopNarration(card) {
-  if (!state.activeAudio) return;
-  if (state.activeMode !== "narration") return;
-
+  if (!state.activeAudio || state.activeMode !== "narration") return;
   const audio = state.activeAudio;
   state.activeAudio = null;
-
   audio.pause();
   audio.currentTime = 0;
-
   if (typeof audio._rejectPlayback === "function") {
     audio._rejectPlayback("Narration stopped by user.");
   }
-
-  if (card) {
-    card.classList.remove("is-narrating", "is-active");
-  }
-
+  if (card) card.classList.remove("is-narrating", "is-active");
   announce("Narration stopped.");
 }
 
@@ -417,30 +479,27 @@ function finishPlayback() {
   document.querySelectorAll(".insect-card").forEach((card) => {
     card.classList.remove("is-holding", "is-active", "is-busy", "is-narrating");
   });
-
-  state.busy = false;
+  state.busy          = false;
   state.holdTriggered = false;
-  state.activeCard = null;
-  state.activeAudio = null;
-  state.activeMode = null;
-  state.pointerId = null;
-  state.movedTooFar = false;
+  state.activeCard    = null;
+  state.activeAudio   = null;
+  state.activeMode    = null;
+  state.pointerId     = null;
+  state.pointerType   = null;
+  state.movedTooFar   = false;
+  state.touchHandled  = false;
 }
 
 function stopAllPlayback() {
   clearHoldTimer();
-
   if (state.activeAudio) {
     const audio = state.activeAudio;
     state.activeAudio = null;
-
     audio.pause();
     audio.currentTime = 0;
-
     if (typeof audio._rejectPlayback === "function") {
       audio._rejectPlayback("Playback stopped.");
     }
   }
-
   finishPlayback();
 }
