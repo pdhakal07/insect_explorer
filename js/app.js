@@ -19,13 +19,12 @@ const state = {
   holdTriggered: false,
   activeCard: null,
   activeAudio: null,
-  currentName: "",
+  activeMode: null,
   pointerId: null,
   startX: 0,
   startY: 0,
   movedTooFar: false,
-  suppressNextClick: false,
-  activeMode: null
+  suppressNextClick: false
 };
 
 const HOLD_MS = 2000;
@@ -39,7 +38,6 @@ document.addEventListener("DOMContentLoaded", () => {
   announce("Gallery ready.");
 
   window.addEventListener("pagehide", stopAllPlayback);
-
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopAllPlayback();
   });
@@ -59,11 +57,9 @@ function renderCards() {
         data-slug="${insect.slug}"
       >
         <button class="card-close" type="button" aria-label="Stop narration">×</button>
-
         <div class="card-media">
           <img src="images/insects/${insect.slug}.png" alt="${insect.name}" loading="lazy" draggable="false" />
         </div>
-
         <div class="hold-meter" aria-hidden="true"></div>
       </article>
     `
@@ -71,58 +67,72 @@ function renderCards() {
     .join("");
 
   grid.querySelectorAll(".insect-card").forEach((card) => {
-    attachPointerEvents(card);
-    attachKeyboardEvents(card);
+    attachCardEvents(card);
     attachCloseButton(card);
+    attachKeyboardEvents(card);
   });
 }
 
-function attachCloseButton(card) {
-  const closeBtn = card.querySelector(".card-close");
-  if (!closeBtn) return;
+function attachCardEvents(card) {
+  card.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(".card-close")) return;
+    onPressStart(event, card);
+  });
 
-  closeBtn.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
+  card.addEventListener("pointermove", (event) => {
+    if (state.activeCard !== card) return;
+    if (state.pointerId !== event.pointerId) return;
 
-    if (card.classList.contains("is-narrating")) {
-      stopNarration(card);
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    if (distance > MOVE_TOLERANCE) {
+      state.movedTooFar = true;
+      clearHoldTimer();
+      card.classList.remove("is-holding");
     }
   });
 
-  closeBtn.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-  });
-}
-
-function attachPointerEvents(card) {
-  card.addEventListener("pointerdown", (event) => {
-    if (event.target.closest(".card-close")) return;
-    onPointerDown(event, card);
+  card.addEventListener("pointerup", (event) => {
+    if (state.pointerId !== event.pointerId) return;
+    endPress(card);
   });
 
-  card.addEventListener("pointermove", (event) => onPointerMove(event, card));
-  card.addEventListener("pointerup", (event) => onPointerUp(event, card));
-  card.addEventListener("pointercancel", () => cancelInteraction(card));
+  card.addEventListener("pointercancel", () => {
+    endPress(card);
+  });
 
   card.addEventListener("pointerleave", (event) => {
     if (event.pointerType === "mouse") {
-      cancelInteraction(card);
+      endPress(card);
     }
   });
 
-  card.addEventListener("click", (event) => {
+  card.addEventListener("click", async (event) => {
+    if (event.target.closest(".card-close")) return;
+
     if (state.suppressNextClick) {
       event.preventDefault();
       event.stopPropagation();
       state.suppressNextClick = false;
+      return;
     }
+
+    if (state.busy) {
+      flashBusy(card);
+      announce("Audio in progress.");
+      return;
+    }
+
+    const insect = findInsect(card.dataset.slug);
+    await playSound(insect, card);
   });
 
   card.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
-function onPointerDown(event, card) {
+function onPressStart(event, card) {
   if (state.busy) {
     flashBusy(card);
     announce("Audio in progress.");
@@ -131,14 +141,15 @@ function onPointerDown(event, card) {
 
   if (event.pointerType === "mouse" && event.button !== 0) return;
 
+  clearHoldTimer();
+
+  state.holdTriggered = false;
+  state.activeCard = card;
   state.pointerId = event.pointerId;
   state.startX = event.clientX;
   state.startY = event.clientY;
   state.movedTooFar = false;
-  state.holdTriggered = false;
-  state.activeCard = card;
 
-  clearHoldTimer();
   card.classList.add("is-holding");
 
   try {
@@ -150,7 +161,9 @@ function onPointerDown(event, card) {
   }
 
   state.holdTimer = setTimeout(async () => {
-    if (state.movedTooFar || state.activeCard !== card || state.busy) return;
+    if (state.busy) return;
+    if (state.activeCard !== card) return;
+    if (state.movedTooFar) return;
 
     state.holdTriggered = true;
     state.suppressNextClick = true;
@@ -158,55 +171,19 @@ function onPointerDown(event, card) {
 
     const insect = findInsect(card.dataset.slug);
     await playNarration(insect, card);
-
-    state.activeCard = null;
-    state.pointerId = null;
   }, HOLD_MS);
 }
 
-function onPointerMove(event, card) {
-  if (state.activeCard !== card) return;
-  if (state.pointerId !== event.pointerId) return;
+function endPress(card) {
+  clearHoldTimer();
 
-  const dx = event.clientX - state.startX;
-  const dy = event.clientY - state.startY;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-
-  if (distance > MOVE_TOLERANCE) {
-    state.movedTooFar = true;
-    clearHoldTimer();
+  if (card) {
     card.classList.remove("is-holding");
   }
-}
-
-async function onPointerUp(event, card) {
-  if (state.activeCard !== card) return;
-  if (state.pointerId !== event.pointerId) return;
-
-  clearHoldTimer();
-  card.classList.remove("is-holding");
-
-  try {
-    card.releasePointerCapture(event.pointerId);
-  } catch (_) {}
-
-  const insect = findInsect(card.dataset.slug);
-  const wasHold = state.holdTriggered;
-  const movedTooFar = state.movedTooFar;
 
   state.activeCard = null;
   state.pointerId = null;
   state.movedTooFar = false;
-
-  if (wasHold) {
-    state.holdTriggered = false;
-    return;
-  }
-
-  if (movedTooFar) return;
-  if (state.busy) return;
-
-  await playSound(insect, card);
 }
 
 function attachKeyboardEvents(card) {
@@ -227,10 +204,11 @@ function attachKeyboardEvents(card) {
 
     state.holdTimer = setTimeout(async () => {
       state.holdTriggered = true;
+      state.suppressNextClick = true;
       card.classList.remove("is-holding");
+
       const insect = findInsect(card.dataset.slug);
       await playNarration(insect, card);
-      state.activeCard = null;
     }, HOLD_MS);
   });
 
@@ -238,18 +216,18 @@ function attachKeyboardEvents(card) {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
 
-    if (state.activeCard !== card) {
-      clearHoldTimer();
-      return;
-    }
-
-    const wasHold = state.holdTriggered;
     clearHoldTimer();
     card.classList.remove("is-holding");
     state.activeCard = null;
 
-    if (wasHold) {
+    if (state.holdTriggered) {
       state.holdTriggered = false;
+      return;
+    }
+
+    if (state.busy) {
+      flashBusy(card);
+      announce("Audio in progress.");
       return;
     }
 
@@ -258,23 +236,30 @@ function attachKeyboardEvents(card) {
   });
 
   card.addEventListener("blur", () => {
-    cancelInteraction(card);
+    clearHoldTimer();
+    card.classList.remove("is-holding");
+    if (state.activeCard === card) {
+      state.activeCard = null;
+    }
   });
 }
 
-function cancelInteraction(card) {
-  clearHoldTimer();
-  state.holdTriggered = false;
-  state.pointerId = null;
-  state.movedTooFar = false;
+function attachCloseButton(card) {
+  const closeBtn = card.querySelector(".card-close");
+  if (!closeBtn) return;
 
-  if (card) {
-    card.classList.remove("is-holding");
-  }
+  closeBtn.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
 
-  if (state.activeCard === card) {
-    state.activeCard = null;
-  }
+  closeBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (card.classList.contains("is-narrating")) {
+      stopNarration(card);
+    }
+  });
 }
 
 function clearHoldTimer() {
@@ -284,9 +269,8 @@ function clearHoldTimer() {
   }
 }
 
-function setBusy(isBusy, insectName = "", card = null, mode = null) {
+function setBusy(isBusy, card = null, mode = null) {
   state.busy = isBusy;
-  state.currentName = insectName;
   state.activeMode = mode;
 
   document.querySelectorAll(".insect-card").forEach((item) => {
@@ -321,7 +305,7 @@ function findInsect(slug) {
 async function playSound(insect, card) {
   if (!insect || state.busy) return;
 
-  setBusy(true, insect.name, card, "sound");
+  setBusy(true, card, "sound");
   announce(`${insect.name} sound playing.`);
 
   try {
@@ -338,7 +322,7 @@ async function playSound(insect, card) {
 async function playNarration(insect, card) {
   if (!insect || state.busy) return;
 
-  setBusy(true, insect.name, card, "narration");
+  setBusy(true, card, "narration");
   announce(`${insect.name} narration playing.`);
 
   try {
@@ -361,15 +345,15 @@ function playAudioFile(source) {
     let settled = false;
 
     const cleanup = () => {
-      audio.oncanplaythrough = null;
       audio.onended = null;
       audio.onerror = null;
+      audio.onloadeddata = null;
     };
 
     audio.preload = "auto";
     audio.src = source;
 
-    audio.oncanplaythrough = async () => {
+    audio.onloadeddata = async () => {
       if (settled) return;
 
       try {
@@ -437,10 +421,10 @@ function finishPlayback() {
   state.busy = false;
   state.holdTriggered = false;
   state.activeCard = null;
+  state.activeAudio = null;
+  state.activeMode = null;
   state.pointerId = null;
   state.movedTooFar = false;
-  state.currentName = "";
-  state.activeMode = null;
 }
 
 function stopAllPlayback() {
@@ -449,6 +433,7 @@ function stopAllPlayback() {
   if (state.activeAudio) {
     const audio = state.activeAudio;
     state.activeAudio = null;
+
     audio.pause();
     audio.currentTime = 0;
 
