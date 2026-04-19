@@ -1,21 +1,3 @@
-/**
- * app.js — Insect Explorer Gallery
- * Optimised for iPad 11-inch (834pt portrait / 1194pt landscape)
- * Safari iPadOS 16+ and Chrome iPadOS 120+
- *
- * Key iPad-specific changes vs original:
- *  1. HOLD_MS stays 2000ms but the hold-meter gives clear visual feedback
- *  2. MOVE_TOLERANCE_TOUCH raised to 36px — iPad stylus (Apple Pencil) and
- *     finger both drift more than a phone; 30px was too tight.
- *  3. Pointer capture is set with a try/catch that also handles iPadOS Safari
- *     occasionally throwing "InvalidStateError" when a second finger lands.
- *  4. overscroll-behavior: none on body prevents pull-to-refresh competing
- *     with the hold gesture (set in CSS).
- *  5. Audio unlock uses the same gesture-driven AudioContext approach but
- *     also tries to resume an existing suspended context on each pointerdown
- *     (iPadOS Safari can re-suspend after tab switching).
- *  6. Will-change is applied per-card in CSS for GPU compositing.
- */
 
 const insects = [
   { slug: "butterfly",    name: "Butterfly"    },
@@ -33,26 +15,25 @@ const insects = [
 ];
 
 const state = {
-  busy:          false,
-  holdTimer:     null,
-  holdTriggered: false,
-  activeCard:    null,
-  activeAudio:   null,
-  activeMode:    null,
-  pointerId:     null,
-  pointerType:   null,
-  startX:        0,
-  startY:        0,
-  movedTooFar:   false,
-  touchHandled:  false,
-  hintDismissed: false
+  busy:              false,
+  holdTimer:         null,
+  holdTriggered:     false,
+  activeCard:        null,
+  activeAudio:       null,
+  activeMode:        null,
+  pointerId:         null,
+  pointerType:       null,   // "mouse" | "touch" | "pen" — set on pointerdown
+  startX:            0,
+  startY:            0,
+  movedTooFar:       false,
+  touchHandled:      false,  // true after touch pointerup fires playSound/narration
+                             // → suppresses the subsequent synthetic click
+  hintDismissed:     false
 };
 
 const HOLD_MS              = 2000;
-const MOVE_TOLERANCE_MOUSE = 10;
-// iPad 11" — raised from 30 to 36px: fingers and Apple Pencil drift more on
-// the larger glass surface; avoids false "moved too far" cancellations.
-const MOVE_TOLERANCE_TOUCH = 36;
+const MOVE_TOLERANCE_MOUSE = 10;   // px — mouse is precise
+const MOVE_TOLERANCE_TOUCH = 30;   // px — fingers tremble, especially on tablets
 
 const grid       = document.getElementById("insect-grid");
 const liveRegion = document.getElementById("sr-status");
@@ -69,14 +50,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopAllPlayback();
   });
-
-  // iPad: when the app returns from background, the AudioContext may be
-  // re-suspended by the OS. Resume it as soon as the page is visible again.
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && audioCtx && audioCtx.state === "suspended") {
-      audioCtx.resume().catch(() => {});
-    }
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -91,18 +64,20 @@ function renderHintBanner() {
   banner.setAttribute("role", "note");
   banner.innerHTML = `
     <div class="hint-inner">
-      <span class="hint-icon" aria-hidden="true">💡</span>
+      <span class="hint-icon">💡</span>
       <span class="hint-text">
         <strong>Tap</strong> any insect to hear its sound &nbsp;·&nbsp;
-        <strong>Hold 2 s</strong> for a full narration
+        <strong>Hold</strong> for a full narration
       </span>
-      <button class="hint-close" aria-label="Dismiss tip" type="button">×</button>
+      <button class="hint-close" aria-label="Dismiss tip">×</button>
     </div>
   `;
 
   shell.querySelector(".topbar").insertAdjacentElement("afterend", banner);
 
-  banner.querySelector(".hint-close").addEventListener("click", () => dismissHint(banner));
+  banner.querySelector(".hint-close").addEventListener("click", () => {
+    dismissHint(banner);
+  });
 
   grid.addEventListener("pointerup", () => {
     if (!state.hintDismissed) dismissHint(banner);
@@ -136,7 +111,6 @@ function renderCards() {
           src="images/insects/${insect.slug}.png"
           alt="${insect.name}"
           loading="lazy"
-          decoding="async"
           draggable="false"
         />
       </div>
@@ -159,9 +133,13 @@ function renderCards() {
 // ─────────────────────────────────────────────────────────────────────
 function attachCardEvents(card) {
 
+  // ── pointerdown: start of every interaction ──────────────────────
   card.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".card-close")) return;
+
+    // Right-click / middle-click on mouse — ignore
     if (e.pointerType === "mouse" && e.button !== 0) return;
+
     if (state.busy) { flashBusy(card); announce("Audio in progress."); return; }
 
     clearHoldTimer();
@@ -170,30 +148,29 @@ function attachCardEvents(card) {
     state.touchHandled  = false;
     state.activeCard    = card;
     state.pointerId     = e.pointerId;
-    state.pointerType   = e.pointerType;
+    state.pointerType   = e.pointerType;   // remember "mouse" vs "touch"/"pen"
     state.startX        = e.clientX;
     state.startY        = e.clientY;
     state.movedTooFar   = false;
 
     card.classList.add("is-holding");
 
-    // setPointerCapture can throw in iPadOS Safari if a concurrent gesture
-    // is already captured; the try/catch prevents an uncaught error.
     try { card.setPointerCapture(e.pointerId); } catch (_) {}
 
-    // For touch/pen: prevent scroll and context-menu during the hold gesture.
-    // For mouse: allow the default so the click event fires normally.
+    // Prevent scroll/context-menu on touch ONLY.
+    // Do NOT call preventDefault() for mouse — it would break the click event.
     if (e.pointerType !== "mouse") {
       e.preventDefault();
     }
 
+    // Start the hold timer for both touch and mouse
     state.holdTimer = setTimeout(async () => {
-      if (state.busy)                return;
-      if (state.activeCard !== card) return;
-      if (state.movedTooFar)         return;
+      if (state.busy)                    return;
+      if (state.activeCard !== card)     return;
+      if (state.movedTooFar)             return;
 
       state.holdTriggered = true;
-      state.touchHandled  = true;
+      state.touchHandled  = true;   // suppress upcoming synthetic click / pointerup sound
       card.classList.remove("is-holding");
 
       const insect = findInsect(card.dataset.slug);
@@ -201,6 +178,7 @@ function attachCardEvents(card) {
     }, HOLD_MS);
   });
 
+  // ── pointermove: cancel hold if user is scrolling ────────────────
   card.addEventListener("pointermove", (e) => {
     if (state.activeCard !== card) return;
     if (state.pointerId !== e.pointerId) return;
@@ -219,28 +197,35 @@ function attachCardEvents(card) {
     }
   });
 
+  // ── pointerup: TOUCH tap triggers sound directly here ────────────
+  // Touch doesn't wait for the synthetic click event.
   card.addEventListener("pointerup", async (e) => {
     if (state.pointerId !== e.pointerId) return;
 
-    const wasTouch = state.pointerType !== "mouse";
+    const wasTouch = state.pointerType !== "mouse";  // touch or pen
 
+    // Clear the hold timer (if we lifted before 2 s)
     clearHoldTimer();
     card.classList.remove("is-holding");
 
     if (wasTouch) {
+      // TOUCH PATH: act directly here, suppress synthetic click below
       if (!state.holdTriggered && !state.movedTooFar && !state.busy) {
         state.touchHandled = true;
         const insect = findInsect(card.dataset.slug);
         await playSound(insect, card);
       }
+      // Whether we played or not, mark as handled so click is suppressed
       state.touchHandled = true;
     }
 
+    // MOUSE PATH: do nothing here — let the synthetic click fire normally
     state.activeCard  = null;
     state.pointerId   = null;
     state.movedTooFar = false;
   });
 
+  // ── pointercancel: system interrupted (e.g. notification, scroll takeover) ──
   card.addEventListener("pointercancel", () => {
     clearHoldTimer();
     card.classList.remove("is-holding");
@@ -250,6 +235,7 @@ function attachCardEvents(card) {
     state.touchHandled = false;
   });
 
+  // ── pointerleave: mouse only — finger leaving card boundary is fine ──
   card.addEventListener("pointerleave", (e) => {
     if (e.pointerType === "mouse") {
       clearHoldTimer();
@@ -260,9 +246,11 @@ function attachCardEvents(card) {
     }
   });
 
+  // ── click: MOUSE only — suppressed entirely for touch via touchHandled ──
   card.addEventListener("click", async (e) => {
     if (e.target.closest(".card-close")) return;
 
+    // Suppress synthetic click that follows a touch pointerup
     if (state.touchHandled) {
       state.touchHandled = false;
       e.preventDefault();
@@ -276,7 +264,7 @@ function attachCardEvents(card) {
     await playSound(insect, card);
   });
 
-  // Suppress long-press context menu (image save / copy link dialogs on iPad)
+  // Prevent long-press context menu on touch
   card.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
@@ -297,7 +285,7 @@ function attachCloseButton(card) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Keyboard events (external keyboard / Magic Keyboard support on iPad)
+// Keyboard events
 // ─────────────────────────────────────────────────────────────────────
 function attachKeyboardEvents(card) {
   card.addEventListener("keydown", (e) => {
@@ -379,37 +367,33 @@ function findInsect(slug) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Audio unlock — critical for iPadOS Safari
+// Audio unlock — MUST happen on first direct user gesture
+// ─────────────────────────────────────────────────────────────────────
 //
-// iPadOS Safari (and Chrome iOS) block audio.play() called outside a
-// direct user-gesture handler. The hold timer fires from setTimeout,
-// which has no gesture context → NotAllowedError.
+// Mobile browsers (Chrome Android, Safari iOS) block audio.play() unless
+// it is called synchronously inside a user-gesture handler. The hold-
+// narration fires from a setTimeout — no gesture context → NotAllowedError
+// → silent failure.
 //
-// Solution (same as original, with iPadOS-specific additions):
-//   1. On the first pointerdown, create & resume an AudioContext.
-//   2. Play a silent 1-frame buffer — standard Safari unlock trick.
-//   3. Prime an <audio> element with volume 0.
-//   4. On subsequent pointerdown events, try to resume the context
-//      again in case iPadOS re-suspended it after tab-switching.
+// Fix: on the very first pointerdown anywhere on the page, create an
+// AudioContext and resume() it inside that gesture. This permanently
+// unlocks the audio system for the whole session. After that, audio.play()
+// works from anywhere — timers, async callbacks, etc.
 // ─────────────────────────────────────────────────────────────────────
 let audioUnlocked = false;
 let audioCtx      = null;
 
 function unlockAudio() {
-  // Always attempt to resume if the context was suspended (iPadOS may
-  // suspend it on tab switch / split-screen switch).
-  if (audioCtx && audioCtx.state === "suspended") {
-    audioCtx.resume().catch(() => {});
-  }
-
   if (audioUnlocked) return;
   audioUnlocked = true;
 
+  // 1. Unlock the Web Audio API context
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") {
       audioCtx.resume().catch(() => {});
     }
+    // Play a 1-frame silent buffer — standard iOS Safari unlock trick
     const buf    = audioCtx.createBuffer(1, 1, 22050);
     const source = audioCtx.createBufferSource();
     source.buffer = buf;
@@ -417,6 +401,7 @@ function unlockAudio() {
     source.start(0);
   } catch (_) {}
 
+  // 2. Prime the <audio> element pipeline (Chrome Android)
   try {
     const primer   = new Audio();
     primer.src     = "audio/sound/ant.mp3";
@@ -430,9 +415,8 @@ function unlockAudio() {
   } catch (_) {}
 }
 
-// Re-run on every pointerdown (not just once) so we can resume a
-// suspended AudioContext on each interaction.
-document.addEventListener("pointerdown", unlockAudio, { passive: true });
+// Hook onto the first pointerdown anywhere on the page
+document.addEventListener("pointerdown", unlockAudio, { once: true, passive: true });
 
 // ─────────────────────────────────────────────────────────────────────
 // Audio playback
@@ -488,14 +472,17 @@ function playAudioFile(source) {
     };
 
     // preload="metadata" — safe on mobile:
-    //   • Loads only headers/duration, not the full file → no memory bomb
-    //   • oncanplay fires reliably on iPadOS → no silent hang
+    //   • loads only headers/duration, not the full file   → no memory bomb
+    //   • oncanplay fires reliably (unlike preload="none") → no silent hang
+    //   • browser can start streaming on play()            → no buffering wait
     audio.preload = "metadata";
     audio.src     = source;
 
+    // oncanplay fires as soon as enough data is available to start playback.
+    // More reliable than onloadeddata across Android WebViews and iOS Safari.
     audio.oncanplay = () => {
       audio.play().then(
-        () => {},
+        () => {},   // playing — wait for onended
         (err) => settle(() => reject(err))
       );
     };
@@ -505,11 +492,10 @@ function playAudioFile(source) {
     audio.onerror = () =>
       settle(() => reject(new Error(`Cannot load audio: ${source}`)));
 
-    // Safety net — unblock UI after 10s (slightly longer for iPad on
-    // cellular or slow Wi-Fi where MP3 headers take longer to fetch)
+    // Safety net — if oncanplay never fires, unblock the UI after 8 s
     watchdog = setTimeout(
       () => settle(() => reject(new Error(`Audio load timeout: ${source}`))),
-      10000
+      8000
     );
 
     audio._rejectPlayback = (message) =>
