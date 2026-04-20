@@ -1,0 +1,13 @@
+{
+  "correct": [
+    "correct/nice_work.mp3",
+    "correct/thats_correct.mp3",
+    "correct/great.mp3",
+    "correct/goodjob.mp3"
+  ],
+  "incorrect": [
+    "incorrect/thats_incorrect.mp3",
+    "incorrect/thats_wrong.mp3",
+    "incorrect/try_again.mp3"
+  ]
+}
