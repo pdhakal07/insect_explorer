@@ -70,6 +70,22 @@ let answered       = false;
 let nextTimer      = null;   // BUG 1 fix: stored so it can be cleared on restart
 let feedbackAudio  = null;   // BUG 2 fix: stored so it can be paused on restart
 
+// ── Audio files loaded from manifest ──────────────────────────────────────
+let CORRECT_SOUNDS = [];
+let INCORRECT_SOUNDS = [];
+
+// Load sound manifest on startup
+(async () => {
+  try {
+    const response = await fetch("audio/quiz/manifest.json");
+    const manifest = await response.json();
+    CORRECT_SOUNDS = manifest.correct.map(f => `audio/quiz/${f}`);
+    INCORRECT_SOUNDS = manifest.incorrect.map(f => `audio/quiz/${f}`);
+  } catch (err) {
+    console.error("Failed to load audio manifest:", err);
+  }
+})();
+
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const splash       = document.getElementById("splash");
 const quizArea     = document.getElementById("quiz-area");
@@ -79,6 +95,7 @@ const progressFill = document.getElementById("progress-fill");
 const progressLbl  = document.getElementById("progress-label");
 const abortModal   = document.getElementById("abort-modal");
 const srStatus     = document.getElementById("sr-status");
+
 
 document.getElementById("btn-start-quiz").addEventListener("click", startQuiz);
 document.getElementById("btn-play-again").addEventListener("click", startQuiz);
@@ -124,7 +141,12 @@ function playFeedback(correct) {
     feedbackAudio.pause();
     feedbackAudio = null;
   }
-  const src    = correct ? "audio/quiz/correct.mp3" : "audio/quiz/wrong.mp3";
+
+  // Randomly select from correct or incorrect sounds
+  const sounds = correct ? CORRECT_SOUNDS : INCORRECT_SOUNDS;
+  if (sounds.length === 0) return; // Skip if no sounds available
+
+  const src = sounds[Math.floor(Math.random() * sounds.length)];
   const a      = new Audio(src);
   a.volume     = 0.7;
   feedbackAudio = a;
@@ -144,6 +166,8 @@ function shuffle(arr) {
 
 // ── Start / Restart ───────────────────────────────────────────────────────
 function startQuiz() {
+  const backLink = document.querySelector(".back-link");
+  if (backLink) backLink.style.display = "none";
   // BUG 1 fix: cancel any pending auto-advance
   if (nextTimer) { clearTimeout(nextTimer); nextTimer = null; }
   // BUG 2 fix: stop orphaned audio
@@ -280,6 +304,8 @@ function applyFeedback(btn, type, icon, name) {
 
 // ── Results ───────────────────────────────────────────────────────────────
 function showResults() {
+  const backLink = document.querySelector(".back-link");
+  if (backLink) backLink.style.display = "block";
   quizArea.style.display = "none";
   progressFill.style.width = "100%";
 
@@ -295,24 +321,37 @@ function showResults() {
   document.getElementById("score-circle").style.background =
     `conic-gradient(${accent} ${deg}deg, ${trackClr} ${deg}deg)`;
 
-  let title, msg;
+  let title, msg, celebrationSound;
   if (score === TOTAL_Q) {
     title = "🏆 Perfect Score!";
     msg   = "Incredible! You identified every insect correctly. You're a true entomologist!";
+    celebrationSound = "audio/quiz/perfect_score.mp3";
   } else if (score >= 6) {
     title = "🌟 Excellent!";
     msg   = `You got ${score} out of ${TOTAL_Q}. Great bug knowledge — just a couple to review!`;
+    celebrationSound = "audio/quiz/excellent.mp3";
   } else if (score >= 4) {
     title = "👍 Good Effort!";
     msg   = `You got ${score} out of ${TOTAL_Q}. Solid start — a bit more studying and you'll ace it!`;
+    celebrationSound = "audio/quiz/good_effort.mp3";
   } else {
     title = "🐛 Keep Exploring!";
     msg   = `You got ${score} out of ${TOTAL_Q}. Head back to the gallery and learn those insects!`;
+    celebrationSound = "audio/quiz/keep_exploring.mp3";
   }
 
   document.getElementById("results-title").textContent = title;
   document.getElementById("results-msg").textContent   = msg;
   resultsEl.style.display = "flex";
+
+  // Play celebration sound based on score
+  if (feedbackAudio) {
+    feedbackAudio.pause();
+    feedbackAudio = null;
+  }
+  const celebrationAudio = new Audio(celebrationSound);
+  celebrationAudio.volume = 0.7;
+  celebrationAudio.play().catch(() => {});
 
   announce(`Quiz complete. You scored ${score} out of ${TOTAL_Q}.`);
 }
@@ -332,6 +371,8 @@ function confirmAbort() {
   if (nextTimer) { clearTimeout(nextTimer); nextTimer = null; }
   if (feedbackAudio) { feedbackAudio.pause(); feedbackAudio = null; }
 
+  const backLink = document.querySelector(".back-link");
+  if (backLink) backLink.style.display = "block";
   abortModal.classList.remove("open");
   quizArea.style.display  = "none";
   resultsEl.style.display = "none";
