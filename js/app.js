@@ -1,19 +1,4 @@
 
-const insects = [
-  { slug: "butterfly",    name: "Butterfly"    },
-  { slug: "ant",          name: "Ant"          },
-  { slug: "grasshopper",  name: "Grasshopper"  },
-  { slug: "beetle",       name: "Beetle"       },
-  { slug: "fly",          name: "Fly"          },
-  { slug: "mosquito",     name: "Mosquito"     },
-  { slug: "termite",      name: "Termite"      },
-  { slug: "bee",          name: "Bee"          },
-  { slug: "wasp",         name: "Wasp"         },
-  { slug: "dragonfly",    name: "Dragonfly"    },
-  { slug: "stick_insect", name: "Stick Insect" },
-  { slug: "cockroach",    name: "Cockroach"    }
-];
-
 const state = {
   busy:              false,
   holdTimer:         null,
@@ -97,7 +82,7 @@ function dismissHint(banner) {
 function renderCards() {
   if (!grid) return;
 
-  grid.innerHTML = insects.map((insect) => `
+  grid.innerHTML = INSECTS.map((insect) => `
     <article
       class="insect-card"
       tabindex="0"
@@ -363,7 +348,7 @@ function flashBusy(card) {
 }
 
 function findInsect(slug) {
-  return insects.find((item) => item.slug === slug);
+  return INSECTS.find((item) => item.slug === slug);
 }
 
 // ─────────────────────────────────────────────────────────────────────
