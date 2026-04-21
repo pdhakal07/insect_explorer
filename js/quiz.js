@@ -1,43 +1,24 @@
-// ── Available insects ─────────────────────────────────────────────────────
-const INSECTS = [
-  { slug: "butterfly",    name: "Butterfly"    },
-  { slug: "ant",          name: "Ant"          },
-  { slug: "grasshopper",  name: "Grasshopper"  },
-  { slug: "beetle",       name: "Beetle"       },
-  { slug: "fly",          name: "Fly"          },
-  { slug: "mosquito",     name: "Mosquito"     },
-  { slug: "termite",      name: "Termite"      },
-  { slug: "bee",          name: "Bee"          },
-  { slug: "wasp",         name: "Wasp"         },
-  { slug: "dragonfly",    name: "Dragonfly"    },
-  { slug: "stick_insect", name: "Stick Insect" },
-  { slug: "cockroach",    name: "Cockroach"    },
-];
-
-// ── Question bank (20 questions, each correctSlug is unique within the bank
-//    after deduplication logic fires — see pickQuestions()) ─────────────────
 const ALL_QUESTIONS = [
-  { text: "Which insect has a narrow waist and lives in colonies underground?", correctSlug: "ant",          distractors: ["butterfly", "grasshopper", "beetle"]   },
-  { text: "Which insect has colorful wings and drinks nectar?",                 correctSlug: "butterfly",    distractors: ["fly", "beetle", "ant"]                  },
-  { text: "Which insect jumps with strong back legs?",                          correctSlug: "grasshopper",  distractors: ["mosquito", "termite", "bee"]             },
-  { text: "Which insect makes honey?",                                          correctSlug: "bee",          distractors: ["wasp", "beetle", "fly"]                  },
-  { text: "Which insect has hardened shell-like wing covers?",                  correctSlug: "beetle",       distractors: ["butterfly", "mosquito", "dragonfly"]     },
-  { text: "Which insect sucks blood from animals and humans?",                  correctSlug: "mosquito",     distractors: ["ant", "butterfly", "beetle"]             },
-  { text: "Which insect buzzes around garbage and spoiled food?",               correctSlug: "fly",          distractors: ["bee", "dragonfly", "grasshopper"]        },
-  { text: "Which insect builds paper nests from chewed wood?",                  correctSlug: "wasp",         distractors: ["bee", "ant", "fly"]                      },
-  { text: "Which insect camouflages itself to look exactly like a twig?",       correctSlug: "stick_insect", distractors: ["beetle", "ant", "fly"]                   },
-  { text: "Which insect is famous for catching prey mid-flight?",               correctSlug: "dragonfly",    distractors: ["butterfly", "ant", "termite"]            },
-  { text: "Which insect eats wood and can silently destroy buildings?",         correctSlug: "termite",      distractors: ["grasshopper", "bee", "butterfly"]        },
-  { text: "Which insect is a common household pest found in kitchens at night?",correctSlug: "cockroach",    distractors: ["butterfly", "dragonfly", "grasshopper"]  },
-  // ── Extra pool: same correctSlugs but different question angles ────────────
-  { text: "Which insect carries food back to its colony in organised lines?",   correctSlug: "ant",          distractors: ["fly", "mosquito", "beetle"]              },
-  { text: "Which insect has wings covered in tiny overlapping scales?",         correctSlug: "butterfly",    distractors: ["beetle", "ant", "termite"]               },
-  { text: "Which insect uses powerful hind legs to leap great distances?",      correctSlug: "grasshopper",  distractors: ["mosquito", "fly", "cockroach"]           },
-  { text: "Which insect warns predators with bold yellow and black stripes?",   correctSlug: "bee",          distractors: ["fly", "termite", "ant"]                  },
-  { text: "Which insect has a metallic iridescent shell on its back?",          correctSlug: "beetle",       distractors: ["dragonfly", "wasp", "termite"]           },
-  { text: "Which insect uses a long needle-like mouthpart to pierce skin?",     correctSlug: "mosquito",     distractors: ["ant", "butterfly", "stick_insect"]       },
-  { text: "Which insect spreads germs by walking on food surfaces?",            correctSlug: "fly",          distractors: ["bee", "wasp", "ant"]                     },
-  { text: "Which insect scurries and hides when you turn on the lights?",       correctSlug: "cockroach",    distractors: ["butterfly", "bee", "dragonfly"]          },
+  { text: "Which insect has a narrow waist and lives in colonies underground?", correctSlug: "ant",         distractors: ["butterfly", "grasshopper", "bess_beetle"] },
+  { text: "Which insect has colorful wings and drinks nectar?",                 correctSlug: "butterfly",   distractors: ["fly", "bess_beetle", "ant"] },
+  { text: "Which insect jumps with strong back legs?",                          correctSlug: "grasshopper", distractors: ["mosquito", "termite", "bee"] },
+  { text: "Which insect makes honey?",                                          correctSlug: "bee",         distractors: ["katydid", "bess_beetle", "fly"] },
+  { text: "Which insect has hardened wings?",                                   correctSlug: "bess_beetle", distractors: ["butterfly", "mosquito", "dragonfly"] },
+  { text: "Which insect sucks blood?",                                          correctSlug: "mosquito",    distractors: ["ant", "butterfly", "bess_beetle"] },
+  { text: "Which insect buzzes around garbage?",                                correctSlug: "fly",         distractors: ["bee", "dragonfly", "grasshopper"] },
+  { text: "Which insect has scaled wings?",                                     correctSlug: "butterfly",   distractors: ["bess_beetle", "ant", "termite"] },
+  { text: "Which insect is a predator that lives mainly underwater and hunt fish and tadpoles?", correctSlug: "dragonfly", distractors: ["bee", "ant", "fly"] },
+  { text: "Which insect makes chirping sounds to attract the females at night?", correctSlug: "cricket",    distractors: ["bess_beetle", "ant", "fly"] },
+  { text: "Which insect catches prey in flight?",                               correctSlug: "dragonfly",   distractors: ["butterfly", "ant", "termite"] },
+  { text: "Which insect eats wood?",                                            correctSlug: "termite",     distractors: ["grasshopper", "bee", "butterfly"] },
+  { text: "Which insect eats leaves?",                                          correctSlug: "grasshopper", distractors: ["mosquito", "fly", "bee"] },
+  { text: "Which insect has a long proboscis used to drink liquids?",           correctSlug: "butterfly",   distractors: ["ant", "bess_beetle", "termite"] },
+  { text: "Which insect looks like a leaf and resembles a grasshopper?",        correctSlug: "katydid",     distractors: ["butterfly", "dragonfly", "grasshopper"] },
+  { text: "Which insect warns predators with bright colors?",                   correctSlug: "bee",         distractors: ["fly", "termite", "ant"] },
+  { text: "Which insect sucks blood and is a vector of diseases?",              correctSlug: "mosquito",    distractors: ["ant", "butterfly", "bess_beetle"] },
+  { text: "Which insect vomits first to liquify solid food and then drinks the liquid with spongy mouthparts?", correctSlug: "fly", distractors: ["mosquito", "cricket", "bess_beetle"] },
+  { text: "Which insect has a caste system that includes a Queen?",             correctSlug: "bee",         distractors: ["butterfly", "cricket", "dragonfly"] },
+  { text: "Which insect carries food in a trail?",                              correctSlug: "ant",         distractors: ["fly", "mosquito", "bess_beetle"] },
 ];
 
 const TOTAL_Q    = 8;
