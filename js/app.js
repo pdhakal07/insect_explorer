@@ -1,4 +1,6 @@
-
+// ─────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────
 const state = {
   busy:           false,
   holdTimer:      null,
@@ -12,17 +14,20 @@ const state = {
   startY:         0,
   movedTooFar:    false,
   touchHandled:   false,  // suppresses synthetic click after touch pointerup
-  hintDismissed:  false
+  hintDismissed:  false,
+  primedAudio:    null    // Audio element created on pointerdown, played on hold fire
 };
 
 const HOLD_MS              = 2000;
-const MOVE_TOLERANCE_MOUSE = 10;   // px
-const MOVE_TOLERANCE_TOUCH = 30;   // px
+const MOVE_TOLERANCE_MOUSE = 10;
+const MOVE_TOLERANCE_TOUCH = 30;
 
 const grid       = document.getElementById("insect-grid");
 const liveRegion = document.getElementById("sr-status");
 
-
+// ─────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   renderCards();
   renderHintBanner();
@@ -106,12 +111,12 @@ function renderCards() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Audio unlock — must happen on first direct user gesture
+// Audio unlock — runs on very first pointerdown anywhere on the page.
 //
-// Mobile browsers block audio.play() unless called inside a user-gesture
-// handler. The hold-narration fires from setTimeout with no gesture context.
-// Fix: on first pointerdown, resume AudioContext and prime the <audio>
-// pipeline. This permanently unlocks audio for the entire session.
+// Resumes the AudioContext and plays a silent primer so the browser
+// marks this session as "user has interacted with audio". After this,
+// Audio elements created and .play()ed later (even from timers) are
+// allowed — as long as we also prime them on pointerdown (see below).
 // ─────────────────────────────────────────────────────────────────────
 let audioUnlocked = false;
 
@@ -119,32 +124,55 @@ function unlockAudio() {
   if (audioUnlocked) return;
   audioUnlocked = true;
 
-  // Unlock Web Audio API (required by iOS Safari)
+  // Unlock Web Audio API context (iOS Safari requirement)
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
-    const buf    = ctx.createBuffer(1, 1, 22050);
-    const source = ctx.createBufferSource();
-    source.buffer = buf;
-    source.connect(ctx.destination);
-    source.start(0);
-  } catch (_) {}
-
-  // Prime <audio> element pipeline (Chrome Android)
-  try {
-    const primer  = new Audio();
-    primer.src    = "audio/sound/ant.mp3";
-    primer.volume = 0;
-    primer.muted  = true;
-    const p = primer.play();
-    if (p && typeof p.then === "function") {
-      p.then(() => { primer.pause(); primer.src = ""; }).catch(() => {});
-    }
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
   } catch (_) {}
 }
 
-// Non-passive so e.preventDefault() still works inside card handlers
 document.addEventListener("pointerdown", unlockAudio, { once: true });
+
+// ─────────────────────────────────────────────────────────────────────
+// Primed audio — the key fix for hold-narration on mobile.
+//
+// Problem: audio.play() called from setTimeout has no gesture context,
+// so mobile browsers block it (NotAllowedError = silent failure).
+//
+// Solution: On pointerdown (inside the gesture), create the Audio element
+// AND call .play() immediately, then immediately .pause() it. This
+// "gesture-stamps" the element. When the hold timer fires 2s later,
+// we just seek to 0 and call .play() again — the browser allows it
+// because the element was already gesture-associated.
+// ─────────────────────────────────────────────────────────────────────
+function primeNarrationAudio(slug) {
+  discardPrimedAudio();
+  try {
+    const audio   = new Audio(`audio/narrative/${slug}.mp3`);
+    audio.preload = "auto";
+    // play() + immediate pause() inside the gesture window stamps the element
+    const p = audio.play();
+    if (p && typeof p.then === "function") {
+      p.then(() => { audio.pause(); audio.currentTime = 0; }).catch(() => {});
+    } else {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+    state.primedAudio = audio;
+  } catch (_) {}
+}
+
+function discardPrimedAudio() {
+  if (state.primedAudio) {
+    try { state.primedAudio.pause(); state.primedAudio.src = ""; } catch (_) {}
+    state.primedAudio = null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Pointer event handlers
@@ -170,13 +198,22 @@ function attachCardEvents(card) {
     card.classList.add("is-holding");
     try { card.setPointerCapture(e.pointerId); } catch (_) {}
 
-    // Prevent scroll/context-menu on touch; don't block mouse (would break click)
+    // Prevent scroll and context menu on touch
     if (e.pointerType !== "mouse") e.preventDefault();
 
+    // Prime the narration audio element NOW, inside the gesture window.
+    // This gesture-stamps it so .play() will work when the timer fires.
+    if (e.pointerType !== "mouse") {
+      primeNarrationAudio(card.dataset.slug);
+    }
+
     state.holdTimer = setTimeout(async () => {
-      if (state.busy || state.activeCard !== card || state.movedTooFar) return;
+      if (state.busy || state.activeCard !== card || state.movedTooFar) {
+        discardPrimedAudio();
+        return;
+      }
       state.holdTriggered = true;
-      state.touchHandled  = true;  // suppress synthetic click / pointerup sound
+      state.touchHandled  = true;
       card.classList.remove("is-holding");
       const insect = findInsect(card.dataset.slug);
       await playNarration(insect, card);
@@ -192,6 +229,7 @@ function attachCardEvents(card) {
     if (Math.sqrt(dx * dx + dy * dy) > tolerance) {
       state.movedTooFar = true;
       clearHoldTimer();
+      discardPrimedAudio();
       card.classList.remove("is-holding");
     }
   });
@@ -201,6 +239,7 @@ function attachCardEvents(card) {
     const wasTouch = state.pointerType !== "mouse";
 
     clearHoldTimer();
+    discardPrimedAudio();
     card.classList.remove("is-holding");
 
     if (state.activeMode === "narration") {
@@ -216,7 +255,7 @@ function attachCardEvents(card) {
       const insect = findInsect(card.dataset.slug);
       await playSound(insect, card);
     } else if (wasTouch) {
-      state.touchHandled = true;  // suppress synthetic click even if we didn't play
+      state.touchHandled = true;
     }
 
     state.activeCard  = null;
@@ -227,17 +266,19 @@ function attachCardEvents(card) {
   card.addEventListener("pointercancel", () => {
     if (state.activeMode === "narration") return;
     clearHoldTimer();
+    discardPrimedAudio();
     card.classList.remove("is-holding");
     state.activeCard   = null;
     state.pointerId    = null;
     state.movedTooFar  = false;
-    state.touchHandled = true;  // suppress any incoming synthetic click
+    state.touchHandled = true;
   });
 
   card.addEventListener("pointerleave", (e) => {
     if (e.pointerType !== "mouse") return;
     if (state.activeMode === "narration") return;
     clearHoldTimer();
+    discardPrimedAudio();
     card.classList.remove("is-holding");
     state.activeCard  = null;
     state.pointerId   = null;
@@ -366,7 +407,7 @@ async function playSound(insect, card) {
   setBusy(true, card, "sound");
   announce(`${insect.name} sound playing.`);
   try {
-    await playAudioFile(`audio/sound/${insect.slug}.mp3`);
+    await playAudioFile(`audio/sound/${insect.slug}.mp3`, null);
     announce(`${insect.name} sound finished.`);
   } catch (err) {
     console.error(err);
@@ -381,7 +422,10 @@ async function playNarration(insect, card) {
   setBusy(true, card, "narration");
   announce(`${insect.name} narration playing.`);
   try {
-    await playAudioFile(`audio/narrative/${insect.slug}.mp3`);
+    // Pass the primed audio element if available — it's already gesture-stamped
+    const primed = state.primedAudio;
+    state.primedAudio = null;
+    await playAudioFile(`audio/narrative/${insect.slug}.mp3`, primed);
     announce(`${insect.name} narration finished.`);
   } catch (err) {
     if (!err || err.message !== "Narration stopped by user.") {
@@ -396,14 +440,12 @@ async function playNarration(insect, card) {
 // ─────────────────────────────────────────────────────────────────────
 // playAudioFile
 //
-// CRITICAL mobile fix: call audio.play() immediately after setting src,
-// NOT inside oncanplay. On iOS Safari, oncanplay fires after the gesture
-// window closes, causing NotAllowedError (silent failure). The correct
-// pattern is to call play() immediately — the browser loads-as-it-plays.
+// If a primed Audio element is passed in, reuse it (it's already
+// gesture-associated from pointerdown). Otherwise create a fresh one.
 // ─────────────────────────────────────────────────────────────────────
-function playAudioFile(source) {
+function playAudioFile(source, primedEl) {
   return new Promise((resolve, reject) => {
-    const audio       = new Audio();
+    const audio       = primedEl || new Audio();
     state.activeAudio = audio;
     let settled       = false;
     let watchdog      = null;
@@ -418,22 +460,29 @@ function playAudioFile(source) {
       fn();
     };
 
-    audio.preload = "auto";
-    audio.src     = source;
     audio.onended = () => settle(() => resolve());
     audio.onerror = () => settle(() => reject(new Error(`Cannot load audio: ${source}`)));
 
-    // Watchdog: 2-minute max (generous for long narrations)
     watchdog = setTimeout(
       () => settle(() => reject(new Error(`Audio timeout: ${source}`))),
       120000
     );
 
-    // Call play() immediately — this is the critical mobile fix.
-    // The browser will start loading and play as data arrives.
-    const playPromise = audio.play();
-    if (playPromise && typeof playPromise.then === "function") {
-      playPromise.catch((err) => settle(() => reject(err)));
+    if (primedEl) {
+      // Element already loaded and gesture-stamped — just seek and play
+      audio.currentTime = 0;
+      const p = audio.play();
+      if (p && typeof p.then === "function") {
+        p.catch((err) => settle(() => reject(err)));
+      }
+    } else {
+      // Fresh element — set src and play immediately
+      audio.preload = "auto";
+      audio.src     = source;
+      const p = audio.play();
+      if (p && typeof p.then === "function") {
+        p.catch((err) => settle(() => reject(err)));
+      }
     }
 
     audio._rejectPlayback = (message) =>
@@ -467,10 +516,12 @@ function finishPlayback() {
   state.pointerType   = null;
   state.movedTooFar   = false;
   state.touchHandled  = false;
+  discardPrimedAudio();
 }
 
 function stopAllPlayback() {
   clearHoldTimer();
+  discardPrimedAudio();
   if (state.activeAudio) {
     const audio = state.activeAudio;
     state.activeAudio = null;
