@@ -3,7 +3,8 @@
     "correct/nice_work.mp3",
     "correct/thats_correct.mp3",
     "correct/great.mp3",
-    "correct/goodjob.mp3"
+    "correct/goodjob.mp3",
+    "correct/thats_right.mp3"
   ],
   "incorrect": [
     "incorrect/thats_incorrect.mp3",

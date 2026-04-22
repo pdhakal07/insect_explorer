@@ -1,36 +1,32 @@
 
 const state = {
-  busy:              false,
-  holdTimer:         null,
-  holdTriggered:     false,
-  activeCard:        null,
-  activeAudio:       null,
-  activeMode:        null,
-  pointerId:         null,
-  pointerType:       null,   // "mouse" | "touch" | "pen" — set on pointerdown
-  startX:            0,
-  startY:            0,
-  movedTooFar:       false,
-  touchHandled:      false,  // true after touch pointerup fires playSound/narration
-                             // → suppresses the subsequent synthetic click
-  hintDismissed:     false
+  busy:           false,
+  holdTimer:      null,
+  holdTriggered:  false,
+  activeCard:     null,
+  activeAudio:    null,
+  activeMode:     null,
+  pointerId:      null,
+  pointerType:    null,   // "mouse" | "touch" | "pen"
+  startX:         0,
+  startY:         0,
+  movedTooFar:    false,
+  touchHandled:   false,  // suppresses synthetic click after touch pointerup
+  hintDismissed:  false
 };
 
 const HOLD_MS              = 2000;
-const MOVE_TOLERANCE_MOUSE = 10;   // px — mouse is precise
-const MOVE_TOLERANCE_TOUCH = 30;   // px — fingers tremble, especially on tablets
+const MOVE_TOLERANCE_MOUSE = 10;   // px
+const MOVE_TOLERANCE_TOUCH = 30;   // px
 
 const grid       = document.getElementById("insect-grid");
 const liveRegion = document.getElementById("sr-status");
 
-// ─────────────────────────────────────────────────────────────────────
-// Init
-// ─────────────────────────────────────────────────────────────────────
+
 document.addEventListener("DOMContentLoaded", () => {
   renderCards();
   renderHintBanner();
   announce("Gallery ready.");
-
   window.addEventListener("pagehide", stopAllPlayback);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopAllPlayback();
@@ -38,7 +34,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Hint banner (onboarding)
+// Hint banner
 // ─────────────────────────────────────────────────────────────────────
 function renderHintBanner() {
   const shell = document.querySelector(".app-shell");
@@ -59,11 +55,7 @@ function renderHintBanner() {
   `;
 
   shell.querySelector(".topbar").insertAdjacentElement("afterend", banner);
-
-  banner.querySelector(".hint-close").addEventListener("click", () => {
-    dismissHint(banner);
-  });
-
+  banner.querySelector(".hint-close").addEventListener("click", () => dismissHint(banner));
   grid.addEventListener("pointerup", () => {
     if (!state.hintDismissed) dismissHint(banner);
   }, { once: true });
@@ -114,70 +106,89 @@ function renderCards() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Audio unlock — must happen on first direct user gesture
+//
+// Mobile browsers block audio.play() unless called inside a user-gesture
+// handler. The hold-narration fires from setTimeout with no gesture context.
+// Fix: on first pointerdown, resume AudioContext and prime the <audio>
+// pipeline. This permanently unlocks audio for the entire session.
+// ─────────────────────────────────────────────────────────────────────
+let audioUnlocked = false;
+
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+
+  // Unlock Web Audio API (required by iOS Safari)
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const buf    = ctx.createBuffer(1, 1, 22050);
+    const source = ctx.createBufferSource();
+    source.buffer = buf;
+    source.connect(ctx.destination);
+    source.start(0);
+  } catch (_) {}
+
+  // Prime <audio> element pipeline (Chrome Android)
+  try {
+    const primer  = new Audio();
+    primer.src    = "audio/sound/ant.mp3";
+    primer.volume = 0;
+    primer.muted  = true;
+    const p = primer.play();
+    if (p && typeof p.then === "function") {
+      p.then(() => { primer.pause(); primer.src = ""; }).catch(() => {});
+    }
+  } catch (_) {}
+}
+
+// Non-passive so e.preventDefault() still works inside card handlers
+document.addEventListener("pointerdown", unlockAudio, { once: true });
+
+// ─────────────────────────────────────────────────────────────────────
 // Pointer event handlers
 // ─────────────────────────────────────────────────────────────────────
 function attachCardEvents(card) {
 
-  // ── pointerdown: start of every interaction ──────────────────────
   card.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".card-close")) return;
-
-    // Block all interactions while narration is playing (only close button works)
     if (state.busy && state.activeMode === "narration") return;
-
-    // Right-click / middle-click on mouse — ignore
     if (e.pointerType === "mouse" && e.button !== 0) return;
-
     if (state.busy) { flashBusy(card); announce("Audio in progress."); return; }
 
     clearHoldTimer();
-
     state.holdTriggered = false;
     state.touchHandled  = false;
     state.activeCard    = card;
     state.pointerId     = e.pointerId;
-    state.pointerType   = e.pointerType;   // remember "mouse" vs "touch"/"pen"
+    state.pointerType   = e.pointerType;
     state.startX        = e.clientX;
     state.startY        = e.clientY;
     state.movedTooFar   = false;
 
     card.classList.add("is-holding");
-
     try { card.setPointerCapture(e.pointerId); } catch (_) {}
 
-    // Prevent scroll/context-menu on touch ONLY.
-    // Do NOT call preventDefault() for mouse — it would break the click event.
-    if (e.pointerType !== "mouse") {
-      e.preventDefault();
-    }
+    // Prevent scroll/context-menu on touch; don't block mouse (would break click)
+    if (e.pointerType !== "mouse") e.preventDefault();
 
-    // Start the hold timer for both touch and mouse
     state.holdTimer = setTimeout(async () => {
-      if (state.busy)                    return;
-      if (state.activeCard !== card)     return;
-      if (state.movedTooFar)             return;
-
+      if (state.busy || state.activeCard !== card || state.movedTooFar) return;
       state.holdTriggered = true;
-      state.touchHandled  = true;   // suppress upcoming synthetic click / pointerup sound
+      state.touchHandled  = true;  // suppress synthetic click / pointerup sound
       card.classList.remove("is-holding");
-
       const insect = findInsect(card.dataset.slug);
       await playNarration(insect, card);
     }, HOLD_MS);
   });
 
-  // ── pointermove: cancel hold if user is scrolling ────────────────
   card.addEventListener("pointermove", (e) => {
-    if (state.activeCard !== card) return;
-    if (state.pointerId !== e.pointerId) return;
-
-    const tolerance = (state.pointerType === "mouse")
-      ? MOVE_TOLERANCE_MOUSE
-      : MOVE_TOLERANCE_TOUCH;
-
+    if (state.activeCard !== card || state.pointerId !== e.pointerId) return;
+    const tolerance = state.pointerType === "mouse"
+      ? MOVE_TOLERANCE_MOUSE : MOVE_TOLERANCE_TOUCH;
     const dx = e.clientX - state.startX;
     const dy = e.clientY - state.startY;
-
     if (Math.sqrt(dx * dx + dy * dy) > tolerance) {
       state.movedTooFar = true;
       clearHoldTimer();
@@ -185,76 +196,57 @@ function attachCardEvents(card) {
     }
   });
 
-  // ── pointerup: TOUCH tap triggers sound directly here ────────────
-  // Touch doesn't wait for the synthetic click event.
-  // But DO allow pointerup even during narration so the close button works
   card.addEventListener("pointerup", async (e) => {
     if (state.pointerId !== e.pointerId) return;
+    const wasTouch = state.pointerType !== "mouse";
 
-    const wasTouch = state.pointerType !== "mouse";  // touch or pen
-
-    // Clear the hold timer (if we lifted before 2 s)
     clearHoldTimer();
     card.classList.remove("is-holding");
 
-    // If narration is playing, don't process further
     if (state.activeMode === "narration") {
-      state.activeCard  = null;
-      state.pointerId   = null;
-      state.movedTooFar = false;
-      state.touchHandled = true; // suppress synthetic click
+      state.activeCard   = null;
+      state.pointerId    = null;
+      state.movedTooFar  = false;
+      state.touchHandled = true;
       return;
     }
 
-    if (wasTouch) {
-      // TOUCH PATH: act directly here, suppress synthetic click below
-      if (!state.holdTriggered && !state.movedTooFar && !state.busy) {
-        state.touchHandled = true;
-        const insect = findInsect(card.dataset.slug);
-        await playSound(insect, card);
-      }
-      // Whether we played or not, mark as handled so click is suppressed
+    if (wasTouch && !state.holdTriggered && !state.movedTooFar && !state.busy) {
       state.touchHandled = true;
+      const insect = findInsect(card.dataset.slug);
+      await playSound(insect, card);
+    } else if (wasTouch) {
+      state.touchHandled = true;  // suppress synthetic click even if we didn't play
     }
 
-    // MOUSE PATH: do nothing here — let the synthetic click fire normally
     state.activeCard  = null;
     state.pointerId   = null;
     state.movedTooFar = false;
   });
 
-  // ── pointercancel: system interrupted (e.g. notification, scroll takeover) ──
   card.addEventListener("pointercancel", () => {
-    // Don't cancel if narration is playing
     if (state.activeMode === "narration") return;
-
     clearHoldTimer();
     card.classList.remove("is-holding");
     state.activeCard   = null;
     state.pointerId    = null;
     state.movedTooFar  = false;
-    state.touchHandled = false;
+    state.touchHandled = true;  // suppress any incoming synthetic click
   });
 
-  // ── pointerleave: mouse only — finger leaving card boundary is fine ──
   card.addEventListener("pointerleave", (e) => {
-    if (e.pointerType === "mouse") {
-      // Don't cancel hold if narration is playing
-      if (state.activeMode === "narration") return;
-
-      clearHoldTimer();
-      card.classList.remove("is-holding");
-      state.activeCard  = null;
-      state.pointerId   = null;
-      state.movedTooFar = false;
-    }
+    if (e.pointerType !== "mouse") return;
+    if (state.activeMode === "narration") return;
+    clearHoldTimer();
+    card.classList.remove("is-holding");
+    state.activeCard  = null;
+    state.pointerId   = null;
+    state.movedTooFar = false;
   });
 
-  // ── click: MOUSE only — suppressed entirely for touch via touchHandled ──
   card.addEventListener("click", async (e) => {
     if (e.target.closest(".card-close")) return;
 
-    // Suppress synthetic click that follows a touch pointerup
     if (state.touchHandled) {
       state.touchHandled = false;
       e.preventDefault();
@@ -262,7 +254,6 @@ function attachCardEvents(card) {
       return;
     }
 
-    // Block all interactions while narration is playing (only close button works)
     if (state.busy && state.activeMode === "narration") {
       e.preventDefault();
       e.stopPropagation();
@@ -275,19 +266,16 @@ function attachCardEvents(card) {
     await playSound(insect, card);
   });
 
-  // Prevent long-press context menu on touch
   card.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Close button (stop narration)
+// Close button
 // ─────────────────────────────────────────────────────────────────────
 function attachCloseButton(card) {
   const closeBtn = card.querySelector(".card-close");
   if (!closeBtn) return;
-
   closeBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
-
   closeBtn.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -302,7 +290,6 @@ function attachKeyboardEvents(card) {
   card.addEventListener("keydown", (e) => {
     if (e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
     e.preventDefault();
-
     if (state.busy) { flashBusy(card); announce("Audio in progress."); return; }
 
     clearHoldTimer();
@@ -321,14 +308,11 @@ function attachKeyboardEvents(card) {
   card.addEventListener("keyup", async (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
-
     clearHoldTimer();
     card.classList.remove("is-holding");
     state.activeCard = null;
-
     if (state.holdTriggered) { state.holdTriggered = false; return; }
     if (state.busy)          { flashBusy(card); announce("Audio in progress."); return; }
-
     const insect = findInsect(card.dataset.slug);
     await playSound(insect, card);
   });
@@ -344,10 +328,7 @@ function attachKeyboardEvents(card) {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 function clearHoldTimer() {
-  if (state.holdTimer) {
-    clearTimeout(state.holdTimer);
-    state.holdTimer = null;
-  }
+  if (state.holdTimer) { clearTimeout(state.holdTimer); state.holdTimer = null; }
 }
 
 function setBusy(isBusy, card = null, mode = null) {
@@ -376,58 +357,6 @@ function flashBusy(card) {
 function findInsect(slug) {
   return INSECTS.find((item) => item.slug === slug);
 }
-
-// ─────────────────────────────────────────────────────────────────────
-// Audio unlock — MUST happen on first direct user gesture
-// ─────────────────────────────────────────────────────────────────────
-//
-// Mobile browsers (Chrome Android, Safari iOS) block audio.play() unless
-// it is called synchronously inside a user-gesture handler. The hold-
-// narration fires from a setTimeout — no gesture context → NotAllowedError
-// → silent failure.
-//
-// Fix: on the very first pointerdown anywhere on the page, create an
-// AudioContext and resume() it inside that gesture. This permanently
-// unlocks the audio system for the whole session. After that, audio.play()
-// works from anywhere — timers, async callbacks, etc.
-// ─────────────────────────────────────────────────────────────────────
-let audioUnlocked = false;
-let audioCtx      = null;
-
-function unlockAudio() {
-  if (audioUnlocked) return;
-  audioUnlocked = true;
-
-  // 1. Unlock the Web Audio API context
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === "suspended") {
-      audioCtx.resume().catch(() => {});
-    }
-    // Play a 1-frame silent buffer — standard iOS Safari unlock trick
-    const buf    = audioCtx.createBuffer(1, 1, 22050);
-    const source = audioCtx.createBufferSource();
-    source.buffer = buf;
-    source.connect(audioCtx.destination);
-    source.start(0);
-  } catch (_) {}
-
-  // 2. Prime the <audio> element pipeline (Chrome Android)
-  try {
-    const primer   = new Audio();
-    primer.src     = "audio/sound/ant.mp3";
-    primer.volume  = 0;
-    primer.muted   = true;
-    primer.preload = "auto";
-    const p = primer.play();
-    if (p && typeof p.then === "function") {
-      p.then(() => { primer.pause(); primer.src = ""; }).catch(() => {});
-    }
-  } catch (_) {}
-}
-
-// Hook onto the first pointerdown anywhere on the page
-document.addEventListener("pointerdown", unlockAudio, { once: true, passive: true });
 
 // ─────────────────────────────────────────────────────────────────────
 // Audio playback
@@ -464,6 +393,14 @@ async function playNarration(insect, card) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// playAudioFile
+//
+// CRITICAL mobile fix: call audio.play() immediately after setting src,
+// NOT inside oncanplay. On iOS Safari, oncanplay fires after the gesture
+// window closes, causing NotAllowedError (silent failure). The correct
+// pattern is to call play() immediately — the browser loads-as-it-plays.
+// ─────────────────────────────────────────────────────────────────────
 function playAudioFile(source) {
   return new Promise((resolve, reject) => {
     const audio       = new Audio();
@@ -475,56 +412,29 @@ function playAudioFile(source) {
       if (settled) return;
       settled           = true;
       clearTimeout(watchdog);
-      audio.onended   = null;
-      audio.onerror   = null;
-      audio.oncanplay = null;
-      audio.onloadedmetadata = null;
+      audio.onended  = null;
+      audio.onerror  = null;
       state.activeAudio = null;
       fn();
     };
 
-    audio.preload = "metadata";
+    audio.preload = "auto";
     audio.src     = source;
+    audio.onended = () => settle(() => resolve());
+    audio.onerror = () => settle(() => reject(new Error(`Cannot load audio: ${source}`)));
 
-    // Once metadata loads, set timeout based on actual duration
-    audio.onloadedmetadata = () => {
-      const duration = audio.duration; // in seconds
-      if (duration > 0) {
-        // Set watchdog to duration + 5 second buffer (in case audio hangs at end)
-        const timeoutMs = Math.ceil((duration + 5) * 1000);
-        watchdog = setTimeout(
-          () => {
-            settle(() => reject(new Error(`Audio load timeout: ${source}`)));
-          },
-          timeoutMs
-        );
-      }
-    };
-
-    audio.oncanplay = () => {
-      audio.play().then(
-        () => {},
-        (err) => { settle(() => reject(err)); }
-      );
-    };
-
-    audio.onended = () => {
-      settle(() => resolve());
-    };
-
-    audio.onerror = () => {
-      settle(() => reject(new Error(`Cannot load audio: ${source}`)));
-    };
-
-    // Fallback timeout — if nothing happens in 120 seconds, give up
-    const fallbackTimeout = setTimeout(
-      () => {
-        if (!settled) {
-          settle(() => reject(new Error(`Audio fallback timeout: ${source}`)));
-        }
-      },
+    // Watchdog: 2-minute max (generous for long narrations)
+    watchdog = setTimeout(
+      () => settle(() => reject(new Error(`Audio timeout: ${source}`))),
       120000
     );
+
+    // Call play() immediately — this is the critical mobile fix.
+    // The browser will start loading and play as data arrives.
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.then === "function") {
+      playPromise.catch((err) => settle(() => reject(err)));
+    }
 
     audio._rejectPlayback = (message) =>
       settle(() => reject(new Error(message)));
