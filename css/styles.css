@@ -328,9 +328,10 @@ body::after {
   border-color: rgba(255, 255, 255, 0.24);
 }
 
-.card-close:focus-visible {
-  outline: 3px solid rgba(121, 215, 255, 0.5);
-  outline-offset: 2px;
+.insect-card.is-narrating {
+  border-color: rgba(140, 241, 201, 0.5) !important;
+  box-shadow: 0 0 24px rgba(140, 241, 201, 0.2) !important;
+  opacity: 1 !important;
 }
 
 @media (max-width: 760px) {

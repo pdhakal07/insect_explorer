@@ -122,6 +122,9 @@ function attachCardEvents(card) {
   card.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".card-close")) return;
 
+    // Block all interactions while narration is playing (only close button works)
+    if (state.busy && state.activeMode === "narration") return;
+
     // Right-click / middle-click on mouse — ignore
     if (e.pointerType === "mouse" && e.button !== 0) return;
 
@@ -184,6 +187,7 @@ function attachCardEvents(card) {
 
   // ── pointerup: TOUCH tap triggers sound directly here ────────────
   // Touch doesn't wait for the synthetic click event.
+  // But DO allow pointerup even during narration so the close button works
   card.addEventListener("pointerup", async (e) => {
     if (state.pointerId !== e.pointerId) return;
 
@@ -192,6 +196,15 @@ function attachCardEvents(card) {
     // Clear the hold timer (if we lifted before 2 s)
     clearHoldTimer();
     card.classList.remove("is-holding");
+
+    // If narration is playing, don't process further
+    if (state.activeMode === "narration") {
+      state.activeCard  = null;
+      state.pointerId   = null;
+      state.movedTooFar = false;
+      state.touchHandled = true; // suppress synthetic click
+      return;
+    }
 
     if (wasTouch) {
       // TOUCH PATH: act directly here, suppress synthetic click below
@@ -212,6 +225,9 @@ function attachCardEvents(card) {
 
   // ── pointercancel: system interrupted (e.g. notification, scroll takeover) ──
   card.addEventListener("pointercancel", () => {
+    // Don't cancel if narration is playing
+    if (state.activeMode === "narration") return;
+
     clearHoldTimer();
     card.classList.remove("is-holding");
     state.activeCard   = null;
@@ -223,6 +239,9 @@ function attachCardEvents(card) {
   // ── pointerleave: mouse only — finger leaving card boundary is fine ──
   card.addEventListener("pointerleave", (e) => {
     if (e.pointerType === "mouse") {
+      // Don't cancel hold if narration is playing
+      if (state.activeMode === "narration") return;
+
       clearHoldTimer();
       card.classList.remove("is-holding");
       state.activeCard  = null;
@@ -238,6 +257,13 @@ function attachCardEvents(card) {
     // Suppress synthetic click that follows a touch pointerup
     if (state.touchHandled) {
       state.touchHandled = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    // Block all interactions while narration is playing (only close button works)
+    if (state.busy && state.activeMode === "narration") {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -452,35 +478,52 @@ function playAudioFile(source) {
       audio.onended   = null;
       audio.onerror   = null;
       audio.oncanplay = null;
+      audio.onloadedmetadata = null;
       state.activeAudio = null;
       fn();
     };
 
-    // preload="metadata" — safe on mobile:
-    //   • loads only headers/duration, not the full file   → no memory bomb
-    //   • oncanplay fires reliably (unlike preload="none") → no silent hang
-    //   • browser can start streaming on play()            → no buffering wait
     audio.preload = "metadata";
     audio.src     = source;
 
-    // oncanplay fires as soon as enough data is available to start playback.
-    // More reliable than onloadeddata across Android WebViews and iOS Safari.
+    // Once metadata loads, set timeout based on actual duration
+    audio.onloadedmetadata = () => {
+      const duration = audio.duration; // in seconds
+      if (duration > 0) {
+        // Set watchdog to duration + 5 second buffer (in case audio hangs at end)
+        const timeoutMs = Math.ceil((duration + 5) * 1000);
+        watchdog = setTimeout(
+          () => {
+            settle(() => reject(new Error(`Audio load timeout: ${source}`)));
+          },
+          timeoutMs
+        );
+      }
+    };
+
     audio.oncanplay = () => {
       audio.play().then(
-        () => {},   // playing — wait for onended
-        (err) => settle(() => reject(err))
+        () => {},
+        (err) => { settle(() => reject(err)); }
       );
     };
 
-    audio.onended = () => settle(() => resolve());
+    audio.onended = () => {
+      settle(() => resolve());
+    };
 
-    audio.onerror = () =>
+    audio.onerror = () => {
       settle(() => reject(new Error(`Cannot load audio: ${source}`)));
+    };
 
-    // Safety net — if oncanplay never fires, unblock the UI after 8 s
-    watchdog = setTimeout(
-      () => settle(() => reject(new Error(`Audio load timeout: ${source}`))),
-      8000
+    // Fallback timeout — if nothing happens in 120 seconds, give up
+    const fallbackTimeout = setTimeout(
+      () => {
+        if (!settled) {
+          settle(() => reject(new Error(`Audio fallback timeout: ${source}`)));
+        }
+      },
+      120000
     );
 
     audio._rejectPlayback = (message) =>
